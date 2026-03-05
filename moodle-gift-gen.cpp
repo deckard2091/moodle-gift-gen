@@ -123,6 +123,26 @@ std::string query_gemini(const std::vector<std::string> &file_ids,
   return result;
 }
 
+// Fix unbalanced backticks caused by the LLM omitting the opening backtick of
+// the first code span or the closing backtick of the last code span.
+// Step 1: if the text starts with a code token (no space before the first
+// backtick), it is missing its opening backtick — prepend one.
+// Step 2: if the backtick count is odd after step 1, the last code span is
+// missing its closing backtick — append one.
+std::string fix_backticks(const std::string &text)
+{
+  std::string result = text;
+
+  size_t first = result.find('`');
+  if (first != std::string::npos && first > 0 && result.find(' ') > first)
+    result = '`' + result;
+
+  if (std::count(result.begin(), result.end(), '`') % 2 != 0)
+    result += '`';
+
+  return result;
+}
+
 std::string escape_gift_text(const std::string &text)
 {
   std::string result;
@@ -261,7 +281,7 @@ std::string convert_to_gift_format(const json &quiz_data,
     for (size_t i = 0; i < options.size(); ++i)
     {
       const char c = (i == correct_index) ? '=' : '~';
-      gift_output << c << escape_gift_text(options[i].get<std::string>())
+      gift_output << c << escape_gift_text(fix_backticks(options[i].get<std::string>()))
                   << '\n';
     }
 
