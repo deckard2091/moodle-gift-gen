@@ -1,0 +1,32 @@
+::Function Call Ownership Transfer::
+[markdown]Consider the following Rust code\:
+```rust
+fn takes_ownership(some_string\: String) \{ /* ... */ \}
+
+let s \= String\:\:from("hello");
+takes_ownership(s);
+// Can 's' be used here?
+```
+What is the status of `s` after the `takes_ownership(s)` call? {
+~`s` is still valid and can be used.
+~`s` becomes immutable.
+=`s` is invalid because its value was moved into the function.
+~`s` is automatically cloned, remaining valid.
+}
+
+::Function Call with Copy Trait::
+[markdown]Consider the following Rust code\:
+```rust
+fn makes_copy(some_integer\: i32) \{ /* ... */ \}
+
+let x \= 5;
+makes_copy(x);
+// Can 'x' be used here?
+```
+What is the status of `x` after the `makes_copy(x)` call? {
+~`x` is invalid because its value was moved into the function.
+=`x` is still valid because `i32` implements the `Copy` trait.
+~`x` becomes a mutable reference.
+~The code will result in a compilation error.
+}
+

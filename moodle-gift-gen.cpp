@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "gift-validator/gift-validator.hpp"
 
 using json = nlohmann::json;
 
@@ -604,7 +605,8 @@ void run_quiz_generation(const int num_questions,
       quiz_data = response_json;
     }
 
-    std::string gift_output = convert_to_gift_format(quiz_data, context_override);
+    std::string tmp = convert_to_gift_format(quiz_data, context_override);
+    std::string gift_output = gift::filter_valid(tmp);
 
     if (interactive)
     {

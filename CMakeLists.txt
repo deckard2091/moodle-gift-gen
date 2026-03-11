@@ -9,6 +9,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
-add_executable(${n} ${n}.cpp)
+add_executable(${n} ${n}.cpp gift-validator/gift-validator.cpp)
 
 target_link_libraries(${n} PRIVATE CURL::libcurl nlohmann_json::nlohmann_json)
