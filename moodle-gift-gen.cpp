@@ -746,35 +746,36 @@ void print_usage(const char *program_name)
          R"(
 
 Options:
-  --help               Show this help message and exit
-  --gemini-api-key KEY Google Gemini API key
-  --interactive        Show GIFT output and ask for approval before saving
-  --num-questions N    Number of questions to generate (default: 5)
-  --output FILE        Write GIFT output to file instead of stdout
-  --files FILES...     Files to process (can be used multiple times)
-  --prompt "TEXT"      Custom query prompt (default: "From both the text and
-                       images in the provided files, generate N multiple choice
-                       questions formatted according to the provided json
-                       schema. Ensure that any code excerpts in the generated
-                       questions or answers are surrounded by a pair of
-                       backticks. Also ensure each question includes a short
-                       title: if a question is based on content from a provided
-                       file, start the question title using a short version of
-                       the relevant file's title or overall theme. Do not refer
-                       to the files provided by an ordinal word, such as
-                       "first" or "second". When referring to an image, do this
-                       only using one or two words which relate to the content
-                       of the image itself; though vary (avoid) this if it
-                       might help answer the question.")
+  --help                Show this help message and exit
+  --gemini-api-key KEY  Google Gemini API key
+  --interactive         Show GIFT output and ask for approval before saving
+  --num-questions N     Number of questions to generate (default: 5)
+  --output FILE         Write GIFT output to file instead of stdout
+  --files FILES...      Files to process (can be used multiple times)
+  --prompt "TEXT"       Custom query prompt (default: "From both the text and
+                        images in the provided files, generate N multiple choice
+                        questions formatted according to the provided json
+                        schema. Ensure that any code excerpts in the generated
+                        questions or answers are surrounded by a pair of
+                        backticks. Also ensure each question includes a short
+                        title: if a question is based on content from a provided
+                        file, start the question title using a short version of
+                        the relevant file's title or overall theme. Do not refer
+                        to the files provided by an ordinal word, such as
+                        "first" or "second". When referring to an image, do this
+                        only using one or two words which relate to the content
+                        of the image itself; though vary (avoid) this if it
+                        might help answer the question.")
 
-  --context "TEXT"     Override the LLM-generated category name with custom text.
-                       The category appears at the top of the GIFT output and is
-                       used by Moodle to organize questions. If not specified,
-                       the LLM generates a short category name based on the
-                       content, with a timestamp automatically appended.
+  --gift-context "TEXT" Override the LLM-generated category name with custom
+                        text. The category appears at the top of the GIFT
+                        output and is used by Moodle to organize questions. If
+                        not specified, the LLM generates a short category name
+                        based on the content, with a timestamp automatically
+                        appended.
 
-  --quiet              Suppress non-error output (except interactive prompts
-                       and final GIFT output)
+  --quiet               Suppress non-error output (except interactive prompts
+                        and final GIFT output)
 
 Examples:
 )"
@@ -793,7 +794,7 @@ Examples:
          "../inputs/*.pdf\n"
          "  "
       << program_name
-      << R"( --context "Cellular Biology 1" --files cells.pdf --output bio.gift
+      << R"( --gift-context "Cellular Biology 1" --files cells.pdf --output bio.gift
 
 Environment:
   GEMINI_API_KEY       API key for Google Gemini (if --gemini-api-key not used)
@@ -886,11 +887,11 @@ CommandLineArgs parse_command_line(int argc, char *argv[])
       args.custom_prompt = argv[i + 1];
       ++i; // Skip the value
     }
-    else if (arg == "--context")
+    else if (arg == "--gift-context")
     {
       if (i + 1 >= argc)
       {
-        throw std::runtime_error("--context requires a value");
+        throw std::runtime_error("--gift-context requires a value");
       }
       args.context = argv[i + 1];
       ++i; // Skip the value
