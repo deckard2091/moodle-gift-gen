@@ -1,0 +1,5 @@
+::Q2:: C11 Annex K bounds-checking interfaces are primarily designed to be safer replacements for existing functions. For example, C11 Annex K defines the strcpy_s(), strcat_s(), strncpy_s(), and strncat_s() functions as replacements for strcpy(), strcat(), strncpy(), and strncat(), respectively.\n\nWhich company first created the C11 Annex K functions? {
+  =Microsoft
+  ~Mozilla
+  ~Oracle
+}

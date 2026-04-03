@@ -9,6 +9,14 @@
 // so that questions passing validation here will import cleanly into Moodle,
 // and those failing here would fail or silently misbehave there.
 //
+// The issue in invalid/one-question-parsed-as-two.gift is not detected. It
+// shows a common problem in MCQs generated from simple LLM prompts: because a
+// question title ::Like This:: is optional, two (or more) adjacent newlines in
+// a question will signify (oten incorrectly) that a new question has begun.
+// "Moodle Quiz GIFT Generator" was not seen to create such faulty outputs, yet
+// it does now explicitly remove the potential problem via its
+// `escape_newlines` function, which replaces each '\n' in Gemini's field
+// strings with the literal \n sequence.
 
 #include <ostream>
 #include <string>

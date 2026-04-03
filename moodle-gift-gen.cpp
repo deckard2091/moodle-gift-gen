@@ -144,6 +144,23 @@ std::string fix_backticks(const std::string &text)
   return result;
 }
 
+// Replace actual newline characters in a Gemini-supplied field with the
+// two-character literal \n sequence that Moodle accepts as a line break,
+// preventing a blank line from splitting the question block in two.
+std::string escape_newlines(const std::string &text)
+{
+  std::string result;
+  result.reserve(text.size());
+  for (const char c : text)
+  {
+    if (c == '\n')
+      result += "\\n";
+    else
+      result += c;
+  }
+  return result;
+}
+
 std::string escape_gift_text(const std::string &text)
 {
   std::string result;
@@ -269,11 +286,11 @@ std::string convert_to_gift_format(const json &quiz_data,
     if (question.contains("title"))
     {
       gift_output << "::"
-                  << escape_gift_text(question["title"].get<std::string>())
+                  << escape_gift_text(escape_newlines(question["title"].get<std::string>()))
                   << "::\n";
     }
     gift_output << "[markdown]"
-                << escape_gift_text(question["question"].get<std::string>())
+                << escape_gift_text(escape_newlines(question["question"].get<std::string>()))
                 << " {\n";
 
     const auto &options = question["options"];
@@ -282,7 +299,7 @@ std::string convert_to_gift_format(const json &quiz_data,
     for (size_t i = 0; i < options.size(); ++i)
     {
       const char c = (i == correct_index) ? '=' : '~';
-      gift_output << c << escape_gift_text(fix_backticks(options[i].get<std::string>()))
+      gift_output << c << escape_gift_text(escape_newlines(fix_backticks(options[i].get<std::string>())))
                   << '\n';
     }
 
