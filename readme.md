@@ -7,6 +7,14 @@ be used instead. Structured output is ensured by a JSON Schema provided as a
 `nlohmann::json` object returned from the `generate_quiz_schema` function. A
 Google Gemini API key is also required; as described below.
 
+If you would like to cite this work, please use the following reference:
+
+*Scaling assessment innovation: from immediate feedback MCQs to automated question generation with LLMs*
+
+Gurney, T. & Keir, P., 7 Jan 2026, Proceedings of 10th Computing Education Practice CEP: 8th January 2026, Durham University UK. Bradley, S. & Southern, K. (eds.). New York: Association for Computing Machinery (ACM), p. 13-16 4 p. (ACM International Conference Proceeding Series).
+
+https://doi.org/10.1145/3772338.3772353
+
 ## Building
 
 The Moodle Quiz GIFT Generator relies on libcurl for network transfer via
