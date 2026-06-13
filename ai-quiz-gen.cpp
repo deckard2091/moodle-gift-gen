@@ -1,5 +1,9 @@
 #include <algorithm>
 #include <chrono>
+#include <random>
+#include <cstring>
+#include <cstdio>
+#include "miniz.h"
 #include <curl/curl.h>
 #include <fstream>
 #include <iomanip>
@@ -273,102 +277,200 @@ std::string escape_xml_text(const std::string &text)
   return result;
 }
 
-void generate_qti_files(const json &quiz_data, const std::string &output_file, const std::string &context_override, bool quiet)
+// Generate a v4-style GUID prefixed with 'i' (matches D2L's Common Cartridge idents).
+static std::string make_guid()
 {
-  std::string category = context_override.empty() ? 
-                         (quiz_data.contains("category") ? quiz_data["category"].get<std::string>() : "Quiz") : 
-                         context_override;
+  static thread_local std::mt19937_64 rng(std::random_device{}());
+  std::uniform_int_distribution<int> hexdig(0, 15);
+  const char *h = "0123456789abcdef";
+  std::string u = "i";
+  auto add = [&](int n) { for (int k = 0; k < n; ++k) u += h[hexdig(rng)]; };
+  add(8); u += '-';
+  add(4); u += "-4";        // version 4
+  add(3); u += '-';
+  u += h[(hexdig(rng) & 0x3) | 0x8]; // variant (8,9,a,b)
+  add(3); u += '-';
+  add(12);
+  return u;
+}
 
-  std::stringstream manifest;
-  manifest << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-  manifest << "<manifest identifier=\"MANIFEST-01\" xmlns=\"http://www.imsglobal.org/xsd/imscp_v1p1\">\n";
-  manifest << "  <organizations/>\n";
-  manifest << "  <resources>\n";
-  manifest << "    <resource identifier=\"RES-01\" type=\"imsqti_xmlv1p2\" href=\"assessment.xml\">\n";
-  manifest << "      <file href=\"assessment.xml\"/>\n";
-  manifest << "    </resource>\n";
-  manifest << "  </resources>\n";
-  manifest << "</manifest>\n";
+// Wrap plain text as a <p>...</p> HTML fragment, XML-escaped for use inside
+// <mattext texttype="text/html"> — this matches what Brightspace itself emits.
+static std::string mattext_html(const std::string &text)
+{
+  return escape_xml_text("<p>" + text + "</p>");
+}
 
-  std::stringstream assessment;
-  assessment << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-  assessment << "<questestinterop>\n";
-  assessment << "  <assessment ident=\"A-1\" title=\"" << escape_xml_text(category) << "\">\n";
-  assessment << "    <section ident=\"S-1\">\n";
+void generate_qti_files(const json &quiz_data, const std::string &output_file,
+                        const std::string &context_override, bool quiet)
+{
+  const std::string title = context_override.empty()
+      ? (quiz_data.contains("category")
+             ? quiz_data["category"].get<std::string>()
+             : "Quiz")
+      : context_override;
+
+  const std::string assess_id = make_guid();
+  const std::string section_id = make_guid();
+
+  // ---- QTI 1.2 assessment (Common Cartridge profile) ----
+  std::stringstream qti;
+  qti << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+  qti << "<questestinterop xmlns=\"http://www.imsglobal.org/xsd/ims_qtiasiv1p2\" "
+         "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+         "xsi:schemaLocation=\"http://www.imsglobal.org/xsd/ims_qtiasiv1p2 "
+         "http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd\">\n";
+  qti << "  <assessment ident=\"" << assess_id << "\" title=\""
+      << escape_xml_text(title) << "\">\n";
+  qti << "    <qtimetadata>\n";
+  qti << "      <qtimetadatafield><fieldlabel>cc_profile</fieldlabel><fieldentry>cc.exam.v0p1</fieldentry></qtimetadatafield>\n";
+  qti << "      <qtimetadatafield><fieldlabel>qmd_assessmenttype</fieldlabel><fieldentry>Examination</fieldentry></qtimetadatafield>\n";
+  qti << "      <qtimetadatafield><fieldlabel>cc_maxattempts</fieldlabel><fieldentry>1</fieldentry></qtimetadatafield>\n";
+  qti << "    </qtimetadata>\n";
+  qti << "    <section ident=\"" << section_id << "\">\n";
 
   int q_idx = 1;
   for (const auto &question : quiz_data["questions"])
   {
-    std::string title = question.contains("title") ? question["title"].get<std::string>() : "Question " + std::to_string(q_idx);
-    std::string q_text = question["question"].get<std::string>();
-
-    assessment << "      <item ident=\"Q-" << q_idx << "\" title=\"" << escape_xml_text(title) << "\">\n";
-    assessment << "        <presentation>\n";
-    assessment << "          <material>\n";
-    assessment << "            <mattext texttype=\"text/html\">" << escape_xml_text(q_text) << "</mattext>\n";
-    assessment << "          </material>\n";
-    assessment << "          <response_lid ident=\"RESPONSE\" rcardinality=\"Single\">\n";
-    assessment << "            <render_choice>\n";
-
-    const auto &options = question["options"];
-    int correct_index = question["correct_answer"].get<int>();
-
-    for (size_t i = 0; i < options.size(); ++i)
+    // The GIFT path is filtered by gift::filter_valid; the CC path needs its own
+    // guard so a malformed question is skipped rather than emitting broken scoring.
+    if (!question.contains("question") || !question.contains("options") ||
+        !question.contains("correct_answer") || !question["options"].is_array())
     {
-      std::string opt_text = options[i].get<std::string>();
-      assessment << "              <response_label ident=\"OPT-" << i << "\">\n";
-      assessment << "                <material><mattext>" << escape_xml_text(opt_text) << "</mattext></material>\n";
-      assessment << "              </response_label>\n";
+      if (!quiet) std::cerr << "Skipping malformed question " << q_idx << std::endl;
+      q_idx++; continue;
+    }
+    const auto &options = question["options"];
+    const int correct_index = question["correct_answer"].get<int>();
+    if (correct_index < 0 ||
+        static_cast<size_t>(correct_index) >= options.size())
+    {
+      if (!quiet)
+        std::cerr << "Skipping question " << q_idx
+                  << " (correct_answer out of range)" << std::endl;
+      q_idx++; continue;
     }
 
-    assessment << "            </render_choice>\n";
-    assessment << "          </response_lid>\n";
-    assessment << "        </presentation>\n";
-    assessment << "        <resprocessing>\n";
-    assessment << "          <outcomes><decvar varname=\"SCORE\" vartype=\"Integer\" defaultval=\"0\"/></outcomes>\n";
-    assessment << "          <respcondition title=\"Correct\">\n";
-    assessment << "            <conditionvar>\n";
-    assessment << "              <varequal respident=\"RESPONSE\">OPT-" << correct_index << "</varequal>\n";
-    assessment << "            </conditionvar>\n";
-    assessment << "            <setvar varname=\"SCORE\" action=\"Set\">1</setvar>\n";
-    assessment << "          </respcondition>\n";
-    assessment << "        </resprocessing>\n";
-    assessment << "      </item>\n";
+    const std::string item_id = make_guid();
+    const std::string lid = make_guid();
+    std::vector<std::string> opt_ids;
+    opt_ids.reserve(options.size());
+    for (size_t i = 0; i < options.size(); ++i) opt_ids.push_back(make_guid());
+
+    qti << "      <item ident=\"" << item_id << "\">\n";
+    qti << "        <itemmetadata>\n";
+    qti << "          <qtimetadata>\n";
+    qti << "            <qtimetadatafield><fieldlabel>cc_profile</fieldlabel><fieldentry>cc.multiple_choice.v0p1</fieldentry></qtimetadatafield>\n";
+    qti << "            <qtimetadatafield><fieldlabel>cc_weighting</fieldlabel><fieldentry>1</fieldentry></qtimetadatafield>\n";
+    qti << "          </qtimetadata>\n";
+    qti << "        </itemmetadata>\n";
+    qti << "        <presentation>\n";
+    qti << "          <material><mattext texttype=\"text/html\">"
+        << mattext_html(question["question"].get<std::string>())
+        << "</mattext></material>\n";
+    qti << "          <response_lid ident=\"" << lid << "\" rcardinality=\"Single\">\n";
+    qti << "            <render_choice>\n";
+    for (size_t i = 0; i < options.size(); ++i)
+    {
+      qti << "              <response_label ident=\"" << opt_ids[i] << "\">\n";
+      qti << "                <material><mattext texttype=\"text/html\">"
+          << mattext_html(options[i].get<std::string>())
+          << "</mattext></material>\n";
+      qti << "              </response_label>\n";
+    }
+    qti << "            </render_choice>\n";
+    qti << "          </response_lid>\n";
+    qti << "        </presentation>\n";
+    qti << "        <resprocessing>\n";
+    qti << "          <outcomes><decvar minvalue=\"0\" maxvalue=\"100\" varname=\"SCORE\" vartype=\"Decimal\"/></outcomes>\n";
+    for (size_t i = 0; i < options.size(); ++i)
+    {
+      if (static_cast<int>(i) == correct_index)
+      {
+        qti << "          <respcondition continue=\"No\">\n";
+        qti << "            <conditionvar><varequal respident=\"" << lid << "\">"
+            << opt_ids[i] << "</varequal></conditionvar>\n";
+        qti << "            <setvar action=\"Set\" varname=\"SCORE\">100</setvar>\n";
+        qti << "          </respcondition>\n";
+      }
+      else
+      {
+        qti << "          <respcondition>\n";
+        qti << "            <conditionvar><varequal respident=\"" << lid << "\">"
+            << opt_ids[i] << "</varequal></conditionvar>\n";
+        qti << "          </respcondition>\n";
+      }
+    }
+    qti << "        </resprocessing>\n";
+    qti << "      </item>\n";
     q_idx++;
   }
 
-  assessment << "    </section>\n";
-  assessment << "  </assessment>\n";
-  assessment << "</questestinterop>\n";
+  qti << "    </section>\n";
+  qti << "  </assessment>\n";
+  qti << "</questestinterop>\n";
 
-  std::string tmp_dir = "qti_tmp_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-  std::string mkdir_cmd = "mkdir -p " + tmp_dir;
-  if (std::system(mkdir_cmd.c_str()) != 0) {
-      throw std::runtime_error("Failed to create temporary directory for QTI");
+  // ---- Common Cartridge 1.3 manifest ----
+  const std::string qti_href =
+      "quiz/" + make_guid() + "/qti_" + make_guid() + ".xml";
+
+  std::stringstream manifest;
+  manifest << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+  manifest << "<manifest identifier=\"" << make_guid() << "\" "
+              "xmlns=\"http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1\" "
+              "xmlns:lomr=\"http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource\" "
+              "xmlns:lomm=\"http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest\" "
+              "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+              "xsi:schemaLocation=\""
+              "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource http://www.imsglobal.org/profile/cc/ccv1p3/LOM/ccv1p3_lomresource_v1p0.xsd "
+              "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1 http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imscp_v1p2_v1p0.xsd "
+              "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest http://www.imsglobal.org/profile/cc/ccv1p3/LOM/ccv1p3_lommanifest_v1p0.xsd\">\n";
+  manifest << "  <metadata>\n";
+  manifest << "    <schema>IMS Common Cartridge</schema>\n";
+  manifest << "    <schemaversion>1.3.0</schemaversion>\n";
+  manifest << "    <lomm:lom><lomm:general><lomm:title><lomm:string language=\"en-US\">"
+           << escape_xml_text(title) << "</lomm:string></lomm:title></lomm:general></lomm:lom>\n";
+  manifest << "  </metadata>\n";
+  manifest << "  <organizations>\n";
+  manifest << "    <organization identifier=\"" << make_guid() << "\" structure=\"rooted-hierarchy\">\n";
+  manifest << "      <item identifier=\"" << make_guid() << "\"/>\n";
+  manifest << "      <metadata><lomm:lom/></metadata>\n";
+  manifest << "    </organization>\n";
+  manifest << "  </organizations>\n";
+  manifest << "  <resources>\n";
+  manifest << "    <resource identifier=\"" << make_guid() << "_R\" type=\"imsqti_xmlv1p2/imscc_xmlv1p3/assessment\">\n";
+  manifest << "      <file href=\"" << qti_href << "\"/>\n";
+  manifest << "    </resource>\n";
+  manifest << "  </resources>\n";
+  manifest << "</manifest>\n";
+
+  // ---- write the .zip with miniz, adding both entries from memory ----
+  const std::string zip_path = output_file.empty() ? "quiz_cc.zip" : output_file;
+  std::remove(zip_path.c_str());
+
+  mz_zip_archive zip;
+  std::memset(&zip, 0, sizeof(zip));
+  if (!mz_zip_writer_init_file(&zip, zip_path.c_str(), 0))
+    throw std::runtime_error("Failed to create zip archive: " + zip_path);
+
+  const std::string manifest_str = manifest.str();
+  const std::string qti_str = qti.str();
+
+  const bool ok =
+      mz_zip_writer_add_mem(&zip, "imsmanifest.xml", manifest_str.data(),
+                            manifest_str.size(), MZ_BEST_COMPRESSION) &&
+      mz_zip_writer_add_mem(&zip, qti_href.c_str(), qti_str.data(),
+                            qti_str.size(), MZ_BEST_COMPRESSION);
+
+  if (!ok || !mz_zip_writer_finalize_archive(&zip))
+  {
+    mz_zip_writer_end(&zip);
+    throw std::runtime_error("Failed to write Common Cartridge zip: " + zip_path);
   }
-
-  std::ofstream man_file(tmp_dir + "/imsmanifest.xml");
-  man_file << manifest.str();
-  man_file.close();
-
-  std::ofstream ass_file(tmp_dir + "/assessment.xml");
-  ass_file << assessment.str();
-  ass_file.close();
-
-  std::string zip_file = output_file.empty() ? "quiz_qti.zip" : output_file;
-  std::string rm_zip = "rm -f " + zip_file;
-  std::system(rm_zip.c_str());
-
-  std::string zip_cmd = "cd " + tmp_dir + " && zip -q -r ../" + zip_file + " *";
-  if (std::system(zip_cmd.c_str()) != 0) {
-      std::system(("rm -rf " + tmp_dir).c_str());
-      throw std::runtime_error("Failed to create zip archive. Ensure 'zip' command is available.");
-  }
-
-  std::system(("rm -rf " + tmp_dir).c_str());
+  mz_zip_writer_end(&zip);
 
   if (!quiet)
-      std::cout << "QTI quiz saved to: " << zip_file << std::endl;
+    std::cout << "Common Cartridge quiz saved to: " << zip_path << std::endl;
 }
 
 std::string convert_to_gift_format(const json &quiz_data,
@@ -740,8 +842,12 @@ void run_quiz_generation(const int num_questions,
       quiz_data = response_json;
     }
 
-    std::string tmp = convert_to_gift_format(quiz_data, context_override);
-    std::string gift_output = gift::filter_valid(tmp);
+    std::string gift_output;
+    if (output_format != "qti" || interactive)
+    {
+      std::string tmp = convert_to_gift_format(quiz_data, context_override);
+      gift_output = gift::filter_valid(tmp);
+    }
 
     if (interactive)
     {
@@ -892,8 +998,8 @@ Options:
   --gemini-api-key KEY  Google Gemini API key
   --interactive         Show GIFT output and ask for approval before saving
   --num-questions N     Number of questions to generate (default: 5)
-  --output FILE         Write output to file instead of stdout (for QTI, creates a zip)
-  --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace)
+  --output FILE         Write output to file instead of stdout (for qti format, creates a Common Cartridge .zip)
+  --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace Common Cartridge)
   --files FILES...      Files to process (can be used multiple times)
   --prompt "TEXT"       Custom query prompt (default: "From both the text and
                         images in the provided files, generate N multiple choice
@@ -1154,6 +1260,10 @@ int main(int argc, char *argv[])
       cleanup_files(file_ids, api_key, args.quiet);
       throw; // Re-throw exception (e.g. 503 model overloaded) after cleanup
     }
+
+    // Clean up uploaded files on the success path too (the catch above
+    // only runs on failure). cleanup_files is a no-op for empty file_ids.
+    cleanup_files(file_ids, api_key, args.quiet);
   }
   catch (const std::exception &e)
   {

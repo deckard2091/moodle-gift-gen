@@ -1,11 +1,8 @@
-# Moodle Quiz GIFT Generator
+# AI Quiz Generator
 
-This command-line tool can quickly generate Moodle Quiz GIFT multiple choice
-questions (MCQs) using a Large Language Model (LLM). The Google Gemini 2.5
-Flash LLM is configured as the default provider, but Gemini 2.5 Pro can easily
-be used instead. Structured output is ensured by a JSON Schema provided as a
-`nlohmann::json` object returned from the `generate_quiz_schema` function. A
-Google Gemini API key is also required; as described below.
+This command-line tool can quickly generate multiple choice questions (MCQs) for Learning Management Systems using a Large Language Model (LLM). It supports exporting to **Moodle (GIFT format)** and **Brightspace (QTI / Common Cartridge 1.3 format)**. 
+
+The Google Gemini 2.5 Flash LLM is configured as the default provider, but Gemini 2.5 Pro can easily be used instead. Structured output is ensured by a JSON Schema. A Google Gemini API key is required.
 
 If you would like to cite this work, please use the following reference:
 
@@ -14,134 +11,73 @@ Gurney, T. & Keir, P., 7 Jan 2026, Proceedings of 10th Computing Education Pract
 
 ## Building
 
-The Moodle Quiz GIFT Generator relies on libcurl for network transfer via
-HTTPS; and the Nlohmann JSON library for parsing and generation of JSO packets.
+The AI Quiz Generator relies on libcurl for network transfer via HTTPS; and the Nlohmann JSON library for parsing and generation of JSON packets. The `miniz` compression library is used for packaging Brightspace zips, but it is vendored directly into the repository so you don't need to install it.
 
 * [libcurl](https://curl.se/libcurl)
 * [Nlohmann JSON](https://github.com/nlohmann/json)
+* [miniz](https://github.com/richgel999/miniz) (vendored)
 
-Your favourite package manager can install these two dependencies.
-Use CMake to configure; then build the `moodle-gift-gen` executable
-(`moodle-gift-gen.exe` on Windows).
+Your favourite package manager can install the network/JSON dependencies. Use CMake to configure; then build the `ai-quiz-gen` executable.
 
 **Ubuntu (Debian)**
-
-Three libcurl APT packages are available; providing different TLS/SSL backends:
-OpenSSL, NSS, or GnuTLS; available in `libcurl4-openssl-dev`,
-`libcurl4-nss-dev, and `libcurl4-gnutls-dev` respectively. They should all
-work. The OpenSSL version is used in testing, and in the command invocation
-below:
-
-```
+```bash
 sudo apt-get install libcurl4-openssl-dev nlohmann-json3-dev
 cmake ..
 make
 ```
 
-**Windows**
-
-If VCPKG is used on Windows for package management, CMake's
-`CMAKE_TOOLCHAIN_FILE` variable can be used to configure the VCPKG toolchain.
-After the two commands below, the generated .sln file can be opened in
-Visual Studio.
-
-```
-vcpkg install curl nlohmann-json
-cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
-```
-
 **MacOS**
-
-Brew can be used to install dependencies on Mac OS.
-
-```
+```bash
 brew install curl nlohmann-json
 cmake ..
+make
 ```
 
 ## Example Usage
 
-Before you run the Moodle Quiz GIFT Generator, you need API access to Gemini.
-Assuming you have a Google account, a project and its API key can easily be
-created using [Google AI Studio](https://aistudio.google.com). API keys are
-further described [here](https://ai.google.dev/gemini-api/docs/api-key).
+Before you run the generator, you need an API key from [Google AI Studio](https://aistudio.google.com). You can provide this key via the `GEMINI_API_KEY` environment variable, or by passing the `--gemini-api-key` command-line flag.
 
-The Moodle Quiz GIFT Generator can find your key if it is either defined in an
-environment variable named `GEMINI_API_KEY`; or provided as a command-line
-option to `moodle-gift-gen`.
-
-The executable `moodle-gift-gen` is standalone, and may be moved from
-the default CMake `build` directory; say to the project root (alongside
-this README.md). Here are some example invocations:
-
-```
-moodle-gift-gen --files inputs/text-and-image-test*.pdf inputs/odd-file-name.md --num-questions 30 --output outputs/30.gift
+### 1. Generating for Moodle (GIFT)
+By default, the tool outputs Moodle GIFT format.
+```bash
+./ai-quiz-gen --files inputs/reading-material.pdf --num-questions 10 --output quiz.gift
 ```
 
-For variety, the prompt below prints to standard output. This was copied
-by hand into the `5.gift` file in the `output` directory.
-
+### 2. Generating for Brightspace (Common Cartridge 1.3)
+You can instruct the tool to generate a Brightspace-compatible `.zip` package by passing `--format qti`.
+```bash
+./ai-quiz-gen --format qti --files inputs/reading-material.pdf --num-questions 10 --output brightspace_quiz.zip
 ```
-moodle-gift-gen --prompt "Generate 5 questions on the topic of modern farming."
-```
+> **IMPORTANT: Brightspace Import Instructions**
+> When importing the generated `.zip` package into Brightspace, you **must** upload it via the **Course Admin Panel -> Import/Export/Copy Components**. 
+> Do *not* try to upload the `.zip` file directly through the Quizzes menu, as Brightspace requires the package to be ingested as a Common Cartridge component.
 
-The usage information shown below is output if no arguments are provided to
-`moodle-gift-gen`:
+### Usage Options
 
-```
-$ moodle-gift-gen
-Usage: ./moodle-gift-gen [OPTIONS]
+```text
+$ ./ai-quiz-gen
+Usage: ./ai-quiz-gen [OPTIONS]
 
 Options:
-  --help               Show this help message and exit
-  --gemini-api-key KEY Google Gemini API key
-  --interactive        Show GIFT output and ask for approval before saving
-  --num-questions N    Number of questions to generate (default: 5)
-  --output FILE        Write GIFT output to file instead of stdout
-  --files FILES...     Files to process (can be used multiple times)
-  --prompt "TEXT"      Custom query prompt (default: "From both the text and
-                       images in the provided files, generate N multiple choice
-                       questions formatted according to the provided json
-                       schema. Ensure that any code excerpts in the generated
-                       questions or answers are surrounded by a pair of
-                       backticks. Also ensure each question includes a short
-                       title: if a question is based on content from a provided
-                       file, start the question title using a short version of
-                       the relevant file's title or overall theme. Do not refer
-                       to the files provided by an ordinal word, such as
-                       "first" or "second". When referring to an image, do this
-                       only using one or two words which relate to the content
-                       of the image itself; though vary (avoid) this if it
-                       might help answer the question.")
-
-  --context "TEXT"     Override the LLM-generated category name with custom text.
-                       The category appears at the top of the GIFT output and is
-                       used by Moodle to organize questions. If not specified,
-                       the LLM generates a short category name based on the
-                       content, with a timestamp automatically appended.
-
-  --quiet              Suppress non-error output (except interactive prompts
-                       and final GIFT output)
+  --help                Show this help message and exit
+  --gemini-api-key KEY  Google Gemini API key
+  --interactive         Show GIFT output and ask for approval before saving
+  --num-questions N     Number of questions to generate (default: 5)
+  --output FILE         Write output to file instead of stdout (for qti format, creates a Common Cartridge .zip)
+  --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace Common Cartridge)
+  --files FILES...      Files to process (can be used multiple times)
+  --prompt "TEXT"       Custom query prompt (default prompts are provided)
+  --gift-context "TEXT" Override the LLM-generated category name/quiz title.
+  --quiet               Suppress non-error output
 
 Examples:
-  ./moodle-gift-gen --files file1.pdf file2.docx --num-questions 10
-  ./moodle-gift-gen --interactive --files a.pdf --num-questions 5 --files b.txt c.md
-  ./moodle-gift-gen --prompt "Generate 7 C++ questions" --output cpp-quiz.gift
-  ./moodle-gift-gen --quiet --gemini-api-key abc123 --output quiz.gift --files ../inputs/*.pdf
-  ./moodle-gift-gen --context "Cellular Biology 1" --files cells.pdf --output bio.gift
-
-Environment:
-  GEMINI_API_KEY       API key for Google Gemini (if --gemini-api-key not used)
-
-Note: If --prompt is used, it should specify the number of questions to be
-      generated. Providing --num-questions too is an error.
+  ./ai-quiz-gen --format qti --files chapter1.pdf --num-questions 5 --output ch1_quiz.zip
+  ./ai-quiz-gen --prompt "Generate 7 C++ questions" --output cpp-quiz.gift
+  ./ai-quiz-gen --quiet --gemini-api-key abc123 --output quiz.gift --files ../inputs/*.pdf
 ```
 
 ## Contributing
-
-Contributions are welcome. Please create or comment on an issue; or submit a
-pull request.
+Contributions are welcome. Please create or comment on an issue; or submit a pull request.
 
 ## License
-
 MIT License
