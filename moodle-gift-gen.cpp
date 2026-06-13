@@ -254,6 +254,123 @@ std::string get_timestamp_suffix()
   return oss.str();
 }
 
+std::string escape_xml_text(const std::string &text)
+{
+  std::string result;
+  result.reserve(text.length() * 1.2);
+  for (char c : text)
+  {
+    switch (c)
+    {
+      case '<': result += "&lt;"; break;
+      case '>': result += "&gt;"; break;
+      case '&': result += "&amp;"; break;
+      case '"': result += "&quot;"; break;
+      case '\'': result += "&apos;"; break;
+      default: result += c;
+    }
+  }
+  return result;
+}
+
+void generate_qti_files(const json &quiz_data, const std::string &output_file, const std::string &context_override, bool quiet)
+{
+  std::string category = context_override.empty() ? 
+                         (quiz_data.contains("category") ? quiz_data["category"].get<std::string>() : "Quiz") : 
+                         context_override;
+
+  std::stringstream manifest;
+  manifest << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  manifest << "<manifest identifier=\"MANIFEST-01\" xmlns=\"http://www.imsglobal.org/xsd/imscp_v1p1\">\n";
+  manifest << "  <organizations/>\n";
+  manifest << "  <resources>\n";
+  manifest << "    <resource identifier=\"RES-01\" type=\"imsqti_xmlv1p2\" href=\"assessment.xml\">\n";
+  manifest << "      <file href=\"assessment.xml\"/>\n";
+  manifest << "    </resource>\n";
+  manifest << "  </resources>\n";
+  manifest << "</manifest>\n";
+
+  std::stringstream assessment;
+  assessment << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  assessment << "<questestinterop>\n";
+  assessment << "  <assessment ident=\"A-1\" title=\"" << escape_xml_text(category) << "\">\n";
+  assessment << "    <section ident=\"S-1\">\n";
+
+  int q_idx = 1;
+  for (const auto &question : quiz_data["questions"])
+  {
+    std::string title = question.contains("title") ? question["title"].get<std::string>() : "Question " + std::to_string(q_idx);
+    std::string q_text = question["question"].get<std::string>();
+
+    assessment << "      <item ident=\"Q-" << q_idx << "\" title=\"" << escape_xml_text(title) << "\">\n";
+    assessment << "        <presentation>\n";
+    assessment << "          <material>\n";
+    assessment << "            <mattext texttype=\"text/html\">" << escape_xml_text(q_text) << "</mattext>\n";
+    assessment << "          </material>\n";
+    assessment << "          <response_lid ident=\"RESPONSE\" rcardinality=\"Single\">\n";
+    assessment << "            <render_choice>\n";
+
+    const auto &options = question["options"];
+    int correct_index = question["correct_answer"].get<int>();
+
+    for (size_t i = 0; i < options.size(); ++i)
+    {
+      std::string opt_text = options[i].get<std::string>();
+      assessment << "              <response_label ident=\"OPT-" << i << "\">\n";
+      assessment << "                <material><mattext>" << escape_xml_text(opt_text) << "</mattext></material>\n";
+      assessment << "              </response_label>\n";
+    }
+
+    assessment << "            </render_choice>\n";
+    assessment << "          </response_lid>\n";
+    assessment << "        </presentation>\n";
+    assessment << "        <resprocessing>\n";
+    assessment << "          <outcomes><decvar varname=\"SCORE\" vartype=\"Integer\" defaultval=\"0\"/></outcomes>\n";
+    assessment << "          <respcondition title=\"Correct\">\n";
+    assessment << "            <conditionvar>\n";
+    assessment << "              <varequal respident=\"RESPONSE\">OPT-" << correct_index << "</varequal>\n";
+    assessment << "            </conditionvar>\n";
+    assessment << "            <setvar varname=\"SCORE\" action=\"Set\">1</setvar>\n";
+    assessment << "          </respcondition>\n";
+    assessment << "        </resprocessing>\n";
+    assessment << "      </item>\n";
+    q_idx++;
+  }
+
+  assessment << "    </section>\n";
+  assessment << "  </assessment>\n";
+  assessment << "</questestinterop>\n";
+
+  std::string tmp_dir = "qti_tmp_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+  std::string mkdir_cmd = "mkdir -p " + tmp_dir;
+  if (std::system(mkdir_cmd.c_str()) != 0) {
+      throw std::runtime_error("Failed to create temporary directory for QTI");
+  }
+
+  std::ofstream man_file(tmp_dir + "/imsmanifest.xml");
+  man_file << manifest.str();
+  man_file.close();
+
+  std::ofstream ass_file(tmp_dir + "/assessment.xml");
+  ass_file << assessment.str();
+  ass_file.close();
+
+  std::string zip_file = output_file.empty() ? "quiz_qti.zip" : output_file;
+  std::string rm_zip = "rm -f " + zip_file;
+  std::system(rm_zip.c_str());
+
+  std::string zip_cmd = "cd " + tmp_dir + " && zip -q -r ../" + zip_file + " *";
+  if (std::system(zip_cmd.c_str()) != 0) {
+      std::system(("rm -rf " + tmp_dir).c_str());
+      throw std::runtime_error("Failed to create zip archive. Ensure 'zip' command is available.");
+  }
+
+  std::system(("rm -rf " + tmp_dir).c_str());
+
+  if (!quiet)
+      std::cout << "QTI quiz saved to: " << zip_file << std::endl;
+}
+
 std::string convert_to_gift_format(const json &quiz_data,
                                    const std::string &context_override)
 {
@@ -524,7 +641,8 @@ void run_quiz_generation(const int num_questions,
                          const bool interactive = false,
                          const bool quiet = false,
                          const std::string &custom_prompt = "",
-                         const std::string &context_override = "")
+                         const std::string &context_override = "",
+                         const std::string &output_format = "gift")
 {
   json schema = generate_quiz_schema();
   std::string query;
@@ -643,22 +761,29 @@ void run_quiz_generation(const int num_questions,
 
     if (satisfied)
     {
-      if (!output_file.empty())
+      if (output_format == "qti")
       {
-        std::ofstream file(output_file);
-        if (!file.is_open())
-        {
-          throw std::runtime_error("Unable to open output file: " +
-                                   output_file);
-        }
-        file << gift_output;
-        file.close();
-        if (!quiet)
-          std::cout << "GIFT quiz saved to: " << output_file << std::endl;
+        generate_qti_files(quiz_data, output_file, context_override, quiet);
       }
-      else if (!interactive)
+      else
       {
-        std::cout << gift_output << std::endl;
+        if (!output_file.empty())
+        {
+          std::ofstream file(output_file);
+          if (!file.is_open())
+          {
+            throw std::runtime_error("Unable to open output file: " +
+                                     output_file);
+          }
+          file << gift_output;
+          file.close();
+          if (!quiet)
+            std::cout << "GIFT quiz saved to: " << output_file << std::endl;
+        }
+        else if (!interactive)
+        {
+          std::cout << gift_output << std::endl;
+        }
       }
     }
   }
@@ -767,7 +892,8 @@ Options:
   --gemini-api-key KEY  Google Gemini API key
   --interactive         Show GIFT output and ask for approval before saving
   --num-questions N     Number of questions to generate (default: 5)
-  --output FILE         Write GIFT output to file instead of stdout
+  --output FILE         Write output to file instead of stdout (for QTI, creates a zip)
+  --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace)
   --files FILES...      Files to process (can be used multiple times)
   --prompt "TEXT"       Custom query prompt (default: "From both the text and
                         images in the provided files, generate N multiple choice
@@ -827,6 +953,7 @@ struct CommandLineArgs
   std::vector<std::string> files;
   std::string gemini_api_key;
   std::string output_file;
+  std::string output_format = "gift";
   std::string custom_prompt;
   std::string context;
   bool interactive = false;
@@ -911,6 +1038,19 @@ CommandLineArgs parse_command_line(int argc, char *argv[])
         throw std::runtime_error("--gift-context requires a value");
       }
       args.context = argv[i + 1];
+      ++i; // Skip the value
+    }
+    else if (arg == "--format")
+    {
+      if (i + 1 >= argc)
+      {
+        throw std::runtime_error("--format requires a value (gift or qti)");
+      }
+      args.output_format = argv[i + 1];
+      if (args.output_format != "gift" && args.output_format != "qti")
+      {
+        throw std::runtime_error("Invalid format: " + args.output_format + ". Must be 'gift' or 'qti'");
+      }
       ++i; // Skip the value
     }
     else if (arg == "--files")
@@ -1007,7 +1147,7 @@ int main(int argc, char *argv[])
     {
       run_quiz_generation(args.num_questions, file_ids, api_key,
                           args.output_file, args.interactive, args.quiet,
-                          args.custom_prompt, args.context);
+                          args.custom_prompt, args.context, args.output_format);
     }
     catch (...)
     {
