@@ -1,0 +1,4 @@
+# miniz is a vendored third-party single-file C library; exclude it from
+# GitHub's language statistics so they reflect this project's own code.
+miniz.c linguist-vendored
+miniz.h linguist-vendored
