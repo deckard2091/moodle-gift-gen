@@ -1,6 +1,6 @@
 # AI Quiz Generator
 
-This command-line tool can quickly generate multiple choice questions (MCQs) for Learning Management Systems using a Large Language Model (LLM). It supports exporting to **Moodle (GIFT format)** and **Brightspace (QTI / Common Cartridge 1.3 format)**. 
+This command-line tool can quickly generate multiple choice questions (MCQs) for Virtual Learning Environments (VLEs) using a Large Language Model (LLM). It supports exporting to **Moodle (GIFT format)** and **Brightspace (QTI / Common Cartridge 1.3 format)**. 
 
 The Google Gemini 2.5 Flash LLM is configured as the default provider, but Gemini 2.5 Pro can easily be used instead. Structured output is ensured by a JSON Schema. A Google Gemini API key is required.
 

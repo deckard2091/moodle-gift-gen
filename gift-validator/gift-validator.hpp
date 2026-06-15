@@ -1,7 +1,7 @@
 #ifndef _GIFT_VALIDATOR_
 #define _GIFT_VALIDATOR_
 
-// gift-validator.hpp — public interface for the Moodle GIFT quiz file
+// gift-validator.hpp: public interface for the Moodle GIFT quiz file
 // validator.
 //
 // Emulates Moodle's qformat_gift PHP parser
@@ -37,8 +37,8 @@ enum class Severity
 // ── DiagnosticKind
 // ────────────────────────────────────────────────────────────
 //
-// Errors   — Moodle rejects the question outright.
-// Warnings — Moodle accepts the question but the result is wrong or surprising.
+// Errors:   Moodle rejects the question outright.
+// Warnings: Moodle accepts the question but the result is wrong or surprising.
 
 enum class DiagnosticKind
 {

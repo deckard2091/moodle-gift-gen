@@ -1,4 +1,4 @@
-// gift-validator.cpp — implementation of the Moodle GIFT quiz file validator.
+// gift-validator.cpp: implementation of the Moodle GIFT quiz file validator.
 //
 // Emulates Moodle's qformat_gift PHP parser
 // (public/question/format/gift/format.php) exactly, including its known bugs.
@@ -17,7 +17,7 @@ namespace detail
 // ── String helpers
 // ────────────────────────────────────────────────────────────
 
-// PHP trim() — strips ASCII whitespace from both ends.
+// PHP trim() strips ASCII whitespace from both ends.
 static std::string php_trim(const std::string &s)
 {
   static const char ws[] = " \t\n\r\v\f";
@@ -42,7 +42,7 @@ static std::string replace_all(std::string s, const std::string &from,
   return s;
 }
 
-// Apply a sequence of (from, to) pairs in order — replicates PHP array
+// Apply a sequence of (from, to) pairs in order; replicates PHP array
 // str_replace.
 static std::string replace_seq(std::string s,
                                const std::vector<std::string> &froms,
@@ -53,7 +53,7 @@ static std::string replace_seq(std::string s,
   return s;
 }
 
-// PHP explode($delim, $s [, $limit]) — limit=-1 means unlimited.
+// PHP explode($delim, $s [, $limit]). limit=-1 means unlimited.
 static std::vector<std::string> php_explode(const std::string &delim,
                                             const std::string &s,
                                             int limit = -1)
@@ -176,7 +176,7 @@ static bool scan_weight_prefix(const std::string &s, size_t &end_pct)
     return false;
   size_t i = 1;
   while (i < s.size() && s[i] == '-')
-    ++i; // \-* — zero or more minus signs
+    ++i; // \-* matches zero or more minus signs
   size_t ds = i;
   while (i < s.size() && std::isdigit((unsigned char)s[i]))
     ++i;
@@ -301,7 +301,7 @@ static Question parse_question(const Block &block)
   // Apply escape-sequence placeholder substitution.
   text = escapedchar_pre(text);
 
-  // $CATEGORY: directive — preg_match('~^\$CATEGORY:~'), then substr($text,
+  // $CATEGORY: directive, via preg_match('~^\$CATEGORY:~'), then substr($text,
   // 10).
   if (text.size() >= 10 && text.compare(0, 10, "$CATEGORY:") == 0)
   {
@@ -330,7 +330,7 @@ static Question parse_question(const Block &block)
   }
 
   // Find answer block using the FIRST '{' and FIRST '}'.
-  // BUG: no balanced matching — any unescaped '{' or '}' in the question text
+  // BUG: no balanced matching; any unescaped '{' or '}' in the question text
   // before the intended answer block will silently corrupt this.
   size_t as = text.find('{');
   size_t af = text.find('}');
@@ -496,7 +496,7 @@ static Question parse_question(const Block &block)
         if (scan_weight_prefix(a, ep))
           a = a.substr(ep + 1);
         else if (!a.empty() && a[0] == '%')
-          continue; // malformed weight prefix — skip
+          continue; // malformed weight prefix, skip
       }
 
       // Strip per-answer feedback (commentparser uses first '#').
@@ -556,7 +556,7 @@ static Question parse_question(const Block &block)
       }
       else
       {
-        // Bare value — zero tolerance.
+        // Bare value, zero tolerance.
         if (!php_is_numeric(a) && a != "*")
         {
           q.warn(DiagnosticKind::NonNumericAnswerSilentStar,
@@ -627,9 +627,9 @@ ParseResult parse(const std::string &content)
   // Moodle's parent class (qformat_default) splits the file on blank lines
   // before any parsing happens.  A blank line inside a ``` ... ``` code block
   // therefore silently splits one question into two separate blocks:
-  //   Block A — parses as a Description (no answer braces, but has a name
+  //   Block A parses as a Description (no answer braces, but has a name
   //             and a code fence in its raw text)
-  //   Block B — parses as a real question type (multichoice etc.) but with
+  //   Block B parses as a real question type (multichoice etc.) but with
   //             no name, because the ::name:: was in block A
   //
   // Both blocks are individually "valid" by Moodle's rules, so the per-block

@@ -131,9 +131,9 @@ std::string query_gemini(const std::vector<std::string> &file_ids,
 // Fix unbalanced backticks caused by the LLM omitting the opening backtick of
 // the first code span or the closing backtick of the last code span.
 // Step 1: if the text starts with a code token (no space before the first
-// backtick), it is missing its opening backtick — prepend one.
+// backtick), it is missing its opening backtick, so prepend one.
 // Step 2: if the backtick count is odd after step 1, the last code span is
-// missing its closing backtick — append one.
+// missing its closing backtick, so append one.
 std::string fix_backticks(const std::string &text)
 {
   std::string result = text;
@@ -295,7 +295,7 @@ static std::string make_guid()
 }
 
 // Wrap plain text as a <p>...</p> HTML fragment, XML-escaped for use inside
-// <mattext texttype="text/html"> — this matches what Brightspace itself emits.
+// <mattext texttype="text/html">. This matches what Brightspace itself emits.
 static std::string mattext_html(const std::string &text)
 {
   return escape_xml_text("<p>" + text + "</p>");
@@ -502,6 +502,19 @@ std::string convert_to_gift_format(const json &quiz_data,
 
   for (const auto &question : quiz_data["questions"])
   {
+    // Guard the index before emitting anything. An out-of-range correct_answer
+    // would otherwise produce a multichoice with no '=' answer; gift::filter_valid
+    // only checks the answer count, not the presence of a correct answer, so such
+    // a question would pass validation here yet be rejected by Moodle on import.
+    const auto &options = question["options"];
+    const int correct_index = question["correct_answer"].get<int>();
+    if (correct_index < 0 ||
+        static_cast<size_t>(correct_index) >= options.size())
+    {
+      std::cerr << "Skipping question (correct_answer out of range)" << std::endl;
+      continue;
+    }
+
     if (question.contains("title"))
     {
       gift_output << "::"
@@ -509,15 +522,12 @@ std::string convert_to_gift_format(const json &quiz_data,
                   << "::\n";
     }
     gift_output << "[markdown]"
-                << escape_gift_text(escape_newlines(question["question"].get<std::string>()))
+                << escape_gift_text(escape_newlines(fix_backticks(question["question"].get<std::string>())))
                 << " {\n";
-
-    const auto &options = question["options"];
-    int correct_index = question["correct_answer"].get<int>();
 
     for (size_t i = 0; i < options.size(); ++i)
     {
-      const char c = (i == correct_index) ? '=' : '~';
+      const char c = (i == static_cast<size_t>(correct_index)) ? '=' : '~';
       gift_output << c << escape_gift_text(escape_newlines(fix_backticks(options[i].get<std::string>())))
                   << '\n';
     }
@@ -1014,7 +1024,10 @@ Options:
                         "first" or "second". When referring to an image, do this
                         only using one or two words which relate to the content
                         of the image itself; though vary (avoid) this if it
-                        might help answer the question.")
+                        might help answer the question. Also generate a short
+                        category name (less than 30 characters) that summarizes
+                        the topic or subject area of the questions based on the
+                        provided context.")
 
   --gift-context "TEXT" Override the LLM-generated category name with custom
                         text. The category appears at the top of the GIFT
