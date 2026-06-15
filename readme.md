@@ -11,24 +11,24 @@ Gurney, T. & Keir, P., 7 Jan 2026, Proceedings of 10th Computing Education Pract
 
 ## Building
 
-The AI Quiz Generator relies on libcurl for network transfer via HTTPS; and the Nlohmann JSON library for parsing and generation of JSON packets. The `miniz` compression library is used for packaging Brightspace zips, but it is vendored directly into the repository so you don't need to install it.
+The AI Quiz Generator relies on libcurl for network transfer via HTTPS; the Nlohmann JSON library for parsing and generation of JSON packets; and zlib for packaging Brightspace Common Cartridge zips.
 
 * [libcurl](https://curl.se/libcurl)
 * [Nlohmann JSON](https://github.com/nlohmann/json)
-* [miniz](https://github.com/richgel999/miniz) (vendored)
+* [zlib](https://www.zlib.net)
 
-Your favourite package manager can install the network/JSON dependencies. Use CMake to configure; then build the `ai-quiz-gen` executable.
+Your favourite package manager can install these dependencies. Use CMake to configure; then build the `ai-quiz-gen` executable.
 
 **Ubuntu (Debian)**
 ```bash
-sudo apt-get install libcurl4-openssl-dev nlohmann-json3-dev
+sudo apt-get install libcurl4-openssl-dev nlohmann-json3-dev zlib1g-dev
 cmake ..
 make
 ```
 
 **MacOS**
 ```bash
-brew install curl nlohmann-json
+brew install curl nlohmann-json zlib
 cmake ..
 make
 ```
@@ -63,7 +63,7 @@ Options:
   --gemini-api-key KEY  Google Gemini API key
   --interactive         Show GIFT output and ask for approval before saving
   --num-questions N     Number of questions to generate (default: 5)
-  --output FILE         Write output to file instead of stdout (for qti format, creates a Common Cartridge .zip)
+  --output FILE         Write GIFT/QTI output to file instead of stdout
   --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace Common Cartridge)
   --files FILES...      Files to process (can be used multiple times)
   --prompt "TEXT"       Custom query prompt (default prompts are provided)

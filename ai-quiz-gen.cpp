@@ -1,9 +1,10 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <cstdint>
 #include <cstring>
 #include <cstdio>
-#include "miniz.h"
+#include <zlib.h>
 #include <curl/curl.h>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +20,13 @@ using json = nlohmann::json;
 
 const std::string GEMINI_MODEL_FLASH = "gemini-2.5-flash";
 const std::string GEMINI_MODEL_PRO = "gemini-2.5-pro";
+
+// Output format selected on the command line via --format.
+enum class OutputFormat
+{
+  Gift, // Moodle GIFT plain text (default)
+  Qti   // Brightspace QTI inside a Common Cartridge 1.3 .zip
+};
 
 size_t write_callback(void *contents, size_t size, size_t nmemb,
                       std::string *result)
@@ -301,6 +309,134 @@ static std::string mattext_html(const std::string &text)
   return escape_xml_text("<p>" + text + "</p>");
 }
 
+// ── Minimal ZIP writer built on zlib ─────────────────────────────────────────
+//
+// zlib's core API provides raw DEFLATE and crc32() but no ZIP container writer
+// (that lives in zlib's separately packaged minizip contrib). The Common
+// Cartridge package only needs a couple of stored entries, so we assemble the
+// archive by hand: a local file header plus DEFLATE stream per entry, followed
+// by the central directory and the end-of-central-directory record.
+
+static void zip_put16(std::string &s, uint16_t v)
+{
+  s.push_back(static_cast<char>(v & 0xff));
+  s.push_back(static_cast<char>((v >> 8) & 0xff));
+}
+
+static void zip_put32(std::string &s, uint32_t v)
+{
+  for (int i = 0; i < 4; ++i)
+    s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+}
+
+// Raw DEFLATE (no zlib/gzip wrapper) of a buffer, as ZIP method 8 expects.
+static std::string zip_deflate(const std::string &in)
+{
+  z_stream strm;
+  std::memset(&strm, 0, sizeof(strm));
+  if (deflateInit2(&strm, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
+                   Z_DEFAULT_STRATEGY) != Z_OK)
+    throw std::runtime_error("deflateInit2 failed");
+
+  std::string out(deflateBound(&strm, in.size()), '\0');
+  strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.data()));
+  strm.avail_in = static_cast<uInt>(in.size());
+  strm.next_out = reinterpret_cast<Bytef *>(&out[0]);
+  strm.avail_out = static_cast<uInt>(out.size());
+
+  const int rc = deflate(&strm, Z_FINISH);
+  if (rc != Z_STREAM_END)
+  {
+    deflateEnd(&strm);
+    throw std::runtime_error("deflate failed");
+  }
+  out.resize(strm.total_out);
+  deflateEnd(&strm);
+  return out;
+}
+
+// Write a ZIP archive at 'path' from (name, contents) entries, all DEFLATE.
+static void write_zip(const std::string &path,
+                      const std::vector<std::pair<std::string, std::string>> &entries)
+{
+  struct CentralEntry
+  {
+    std::string name;
+    uint32_t crc, comp_size, uncomp_size, offset;
+  };
+
+  std::string buf;
+  std::vector<CentralEntry> dir;
+  dir.reserve(entries.size());
+
+  for (const auto &entry : entries)
+  {
+    const std::string &name = entry.first;
+    const std::string &data = entry.second;
+
+    const uint32_t crc = crc32(crc32(0L, Z_NULL, 0),
+                               reinterpret_cast<const Bytef *>(data.data()),
+                               static_cast<uInt>(data.size()));
+    const std::string comp = zip_deflate(data);
+    const uint32_t offset = static_cast<uint32_t>(buf.size());
+
+    zip_put32(buf, 0x04034b50); // local file header signature
+    zip_put16(buf, 20);         // version needed to extract
+    zip_put16(buf, 0);          // general purpose bit flag
+    zip_put16(buf, 8);          // compression method = DEFLATE
+    zip_put16(buf, 0);          // last mod time
+    zip_put16(buf, 0x21);       // last mod date = 1980-01-01
+    zip_put32(buf, crc);
+    zip_put32(buf, static_cast<uint32_t>(comp.size()));
+    zip_put32(buf, static_cast<uint32_t>(data.size()));
+    zip_put16(buf, static_cast<uint16_t>(name.size()));
+    zip_put16(buf, 0); // extra field length
+    buf += name;
+    buf += comp;
+
+    dir.push_back({name, crc, static_cast<uint32_t>(comp.size()),
+                   static_cast<uint32_t>(data.size()), offset});
+  }
+
+  const uint32_t cd_offset = static_cast<uint32_t>(buf.size());
+  for (const auto &e : dir)
+  {
+    zip_put32(buf, 0x02014b50); // central directory header signature
+    zip_put16(buf, 20);         // version made by
+    zip_put16(buf, 20);         // version needed to extract
+    zip_put16(buf, 0);          // general purpose bit flag
+    zip_put16(buf, 8);          // compression method = DEFLATE
+    zip_put16(buf, 0);          // last mod time
+    zip_put16(buf, 0x21);       // last mod date = 1980-01-01
+    zip_put32(buf, e.crc);
+    zip_put32(buf, e.comp_size);
+    zip_put32(buf, e.uncomp_size);
+    zip_put16(buf, static_cast<uint16_t>(e.name.size()));
+    zip_put16(buf, 0); // extra field length
+    zip_put16(buf, 0); // file comment length
+    zip_put16(buf, 0); // disk number start
+    zip_put16(buf, 0); // internal file attributes
+    zip_put32(buf, 0); // external file attributes
+    zip_put32(buf, e.offset);
+    buf += e.name;
+  }
+  const uint32_t cd_size = static_cast<uint32_t>(buf.size()) - cd_offset;
+
+  zip_put32(buf, 0x06054b50); // end of central directory signature
+  zip_put16(buf, 0);          // number of this disk
+  zip_put16(buf, 0);          // disk where central directory starts
+  zip_put16(buf, static_cast<uint16_t>(dir.size())); // entries on this disk
+  zip_put16(buf, static_cast<uint16_t>(dir.size())); // total entries
+  zip_put32(buf, cd_size);
+  zip_put32(buf, cd_offset);
+  zip_put16(buf, 0); // comment length
+
+  std::ofstream f(path, std::ios::binary);
+  if (!f)
+    throw std::runtime_error("Failed to create zip archive: " + path);
+  f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+}
+
 void generate_qti_files(const json &quiz_data, const std::string &output_file,
                         const std::string &context_override, bool quiet)
 {
@@ -444,30 +580,12 @@ void generate_qti_files(const json &quiz_data, const std::string &output_file,
   manifest << "  </resources>\n";
   manifest << "</manifest>\n";
 
-  // ---- write the .zip with miniz, adding both entries from memory ----
+  // ---- write the .zip with zlib, adding both entries from memory ----
   const std::string zip_path = output_file.empty() ? "quiz_cc.zip" : output_file;
   std::remove(zip_path.c_str());
 
-  mz_zip_archive zip;
-  std::memset(&zip, 0, sizeof(zip));
-  if (!mz_zip_writer_init_file(&zip, zip_path.c_str(), 0))
-    throw std::runtime_error("Failed to create zip archive: " + zip_path);
-
-  const std::string manifest_str = manifest.str();
-  const std::string qti_str = qti.str();
-
-  const bool ok =
-      mz_zip_writer_add_mem(&zip, "imsmanifest.xml", manifest_str.data(),
-                            manifest_str.size(), MZ_BEST_COMPRESSION) &&
-      mz_zip_writer_add_mem(&zip, qti_href.c_str(), qti_str.data(),
-                            qti_str.size(), MZ_BEST_COMPRESSION);
-
-  if (!ok || !mz_zip_writer_finalize_archive(&zip))
-  {
-    mz_zip_writer_end(&zip);
-    throw std::runtime_error("Failed to write Common Cartridge zip: " + zip_path);
-  }
-  mz_zip_writer_end(&zip);
+  write_zip(zip_path, {{"imsmanifest.xml", manifest.str()},
+                       {qti_href, qti.str()}});
 
   if (!quiet)
     std::cout << "Common Cartridge quiz saved to: " << zip_path << std::endl;
@@ -754,7 +872,7 @@ void run_quiz_generation(const int num_questions,
                          const bool quiet = false,
                          const std::string &custom_prompt = "",
                          const std::string &context_override = "",
-                         const std::string &output_format = "gift")
+                         const OutputFormat output_format = OutputFormat::Gift)
 {
   json schema = generate_quiz_schema();
   std::string query;
@@ -853,7 +971,7 @@ void run_quiz_generation(const int num_questions,
     }
 
     std::string gift_output;
-    if (output_format != "qti" || interactive)
+    if (output_format != OutputFormat::Qti || interactive)
     {
       std::string tmp = convert_to_gift_format(quiz_data, context_override);
       gift_output = gift::filter_valid(tmp);
@@ -877,7 +995,7 @@ void run_quiz_generation(const int num_questions,
 
     if (satisfied)
     {
-      if (output_format == "qti")
+      if (output_format == OutputFormat::Qti)
       {
         generate_qti_files(quiz_data, output_file, context_override, quiet);
       }
@@ -1008,7 +1126,7 @@ Options:
   --gemini-api-key KEY  Google Gemini API key
   --interactive         Show GIFT output and ask for approval before saving
   --num-questions N     Number of questions to generate (default: 5)
-  --output FILE         Write output to file instead of stdout (for qti format, creates a Common Cartridge .zip)
+  --output FILE         Write GIFT/QTI output to file instead of stdout
   --format FMT          Output format: 'gift' (Moodle, default) or 'qti' (Brightspace Common Cartridge)
   --files FILES...      Files to process (can be used multiple times)
   --prompt "TEXT"       Custom query prompt (default: "From both the text and
@@ -1072,7 +1190,7 @@ struct CommandLineArgs
   std::vector<std::string> files;
   std::string gemini_api_key;
   std::string output_file;
-  std::string output_format = "gift";
+  OutputFormat output_format = OutputFormat::Gift;
   std::string custom_prompt;
   std::string context;
   bool interactive = false;
@@ -1165,11 +1283,14 @@ CommandLineArgs parse_command_line(int argc, char *argv[])
       {
         throw std::runtime_error("--format requires a value (gift or qti)");
       }
-      args.output_format = argv[i + 1];
-      if (args.output_format != "gift" && args.output_format != "qti")
-      {
-        throw std::runtime_error("Invalid format: " + args.output_format + ". Must be 'gift' or 'qti'");
-      }
+      const std::string format = argv[i + 1];
+      if (format == "gift")
+        args.output_format = OutputFormat::Gift;
+      else if (format == "qti")
+        args.output_format = OutputFormat::Qti;
+      else
+        throw std::runtime_error("Invalid format: " + format +
+                                 ". Must be 'gift' or 'qti'");
       ++i; // Skip the value
     }
     else if (arg == "--files")
